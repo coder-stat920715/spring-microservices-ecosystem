@@ -1,0 +1,45 @@
+server:
+  port: 8888
+  shutdown: graceful
+spring:
+  application:
+    name: config-server
+  profiles:
+    active: native
+  cloud:
+    config:
+      server:
+        native:
+          search-locations: classpath:/config-repo/
+  security:
+    user:
+      name: ${CONFIG_USER:config}
+      password: ${CONFIG_PASSWORD:config}
+# Symmetric key for {cipher}-prefixed values. In production inject from AWS Secrets Manager
+# (or switch to an asymmetric key store: encrypt.key-store.*).
+encrypt:
+  key: ${CONFIG_ENCRYPT_KEY:local-dev-only-change-me}
+
+management:
+  server:
+    port: ${MANAGEMENT_PORT:9090}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}

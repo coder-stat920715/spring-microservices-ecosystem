@@ -1,0 +1,11 @@
+output "vpc_id" { value = module.vpc.vpc_id }
+output "eks_cluster_name" { value = module.eks.cluster_name }
+output "external_alb_security_group_id" { value = aws_security_group.external_alb.id }
+output "regional_waf_acl_arn" { value = aws_wafv2_web_acl.regional.arn }
+output "lb_controller_role_arn" { value = module.lb_controller_irsa.iam_role_arn }
+output "adot_role_arn" { value = module.adot_irsa.iam_role_arn }
+output "cloudfront_domain" { value = aws_cloudfront_distribution.main.domain_name }
+output "postgres_endpoint" { value = aws_db_instance.postgres.address }
+output "redis_endpoint" { value = aws_elasticache_replication_group.redis.primary_endpoint_address }
+output "kafka_bootstrap_tls" { value = aws_msk_cluster.kafka.bootstrap_brokers_tls }
+output "docdb_endpoint" { value = aws_docdb_cluster.read_model.endpoint }

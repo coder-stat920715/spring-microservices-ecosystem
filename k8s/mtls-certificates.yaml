@@ -1,0 +1,142 @@
+# Requires cert-manager. A private CA signs short-lived, auto-rotated X.509 certs used by Spring SSL
+# bundles (mounted at /etc/mtls: tls.crt, tls.key, ca.crt).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: internal-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: ecosystem-internal-ca
+  secretName: internal-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-bootstrap
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: internal-ca
+spec:
+  ca:
+    secretName: internal-ca
+---
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: config-server-tls
+  namespace: enterprise
+spec:
+  secretName: config-server-tls
+  duration: 720h
+  renewBefore: 240h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages: ["server auth", "client auth"]
+  dnsNames:
+    - config-server
+    - config-server.enterprise.svc
+    - config-server.enterprise.svc.cluster.local
+  issuerRef:
+    name: internal-ca
+    kind: ClusterIssuer
+---
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: api-gateway-tls
+  namespace: enterprise
+spec:
+  secretName: api-gateway-tls
+  duration: 720h
+  renewBefore: 240h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages: ["server auth", "client auth"]
+  dnsNames:
+    - api-gateway
+    - api-gateway.enterprise.svc
+    - api-gateway.enterprise.svc.cluster.local
+  issuerRef:
+    name: internal-ca
+    kind: ClusterIssuer
+---
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: order-command-service-tls
+  namespace: enterprise
+spec:
+  secretName: order-command-service-tls
+  duration: 720h
+  renewBefore: 240h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages: ["server auth", "client auth"]
+  dnsNames:
+    - order-command-service
+    - order-command-service.enterprise.svc
+    - order-command-service.enterprise.svc.cluster.local
+  issuerRef:
+    name: internal-ca
+    kind: ClusterIssuer
+---
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: order-query-service-tls
+  namespace: enterprise
+spec:
+  secretName: order-query-service-tls
+  duration: 720h
+  renewBefore: 240h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages: ["server auth", "client auth"]
+  dnsNames:
+    - order-query-service
+    - order-query-service.enterprise.svc
+    - order-query-service.enterprise.svc.cluster.local
+  issuerRef:
+    name: internal-ca
+    kind: ClusterIssuer
+---
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: payment-service-tls
+  namespace: enterprise
+spec:
+  secretName: payment-service-tls
+  duration: 720h
+  renewBefore: 240h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages: ["server auth", "client auth"]
+  dnsNames:
+    - payment-service
+    - payment-service.enterprise.svc
+    - payment-service.enterprise.svc.cluster.local
+  issuerRef:
+    name: internal-ca
+    kind: ClusterIssuer

@@ -1,0 +1,43 @@
+server:
+  port: 8761
+  shutdown: graceful
+spring:
+  application:
+    name: discovery-server
+eureka:
+  instance:
+    hostname: ${EUREKA_HOSTNAME:localhost}
+    prefer-ip-address: false
+  client:
+    # Set EUREKA_PEER_MODE=true in the 3-replica StatefulSet so peers replicate to each other.
+    register-with-eureka: ${EUREKA_PEER_MODE:false}
+    fetch-registry: ${EUREKA_PEER_MODE:false}
+    service-url:
+      defaultZone: ${EUREKA_PEERS:http://localhost:8761/eureka/}
+  server:
+    enable-self-preservation: true
+    wait-time-in-ms-when-sync-empty: 0
+
+management:
+  server:
+    port: ${MANAGEMENT_PORT:9090}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}

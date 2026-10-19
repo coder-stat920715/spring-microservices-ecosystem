@@ -1,0 +1,135 @@
+# Kafka Connect cluster running the Debezium PostgreSQL connector (outbox -> Kafka).
+# Register the connector once:  kubectl -n enterprise apply -f this file (Job at the bottom).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-connect
+  namespace: enterprise
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kafka-connect
+  template:
+    metadata:
+      labels:
+        app: kafka-connect
+    spec:
+      containers:
+        - name: connect
+          image: quay.io/debezium/connect:2.7
+          ports:
+            - containerPort: 8083
+          env:
+            - name: BOOTSTRAP_SERVERS
+              value: ${KAFKA_BOOTSTRAP_TLS}
+            - name: GROUP_ID
+              value: debezium-connect
+            - name: CONFIG_STORAGE_TOPIC
+              value: connect_configs
+            - name: OFFSET_STORAGE_TOPIC
+              value: connect_offsets
+            - name: STATUS_STORAGE_TOPIC
+              value: connect_statuses
+            - name: CONNECT_SECURITY_PROTOCOL
+              value: SSL
+            - name: CONNECT_PRODUCER_SECURITY_PROTOCOL
+              value: SSL
+            - name: CONNECT_CONSUMER_SECURITY_PROTOCOL
+              value: SSL
+            - name: CONNECT_CONFIG_PROVIDERS
+              value: file
+            - name: CONNECT_CONFIG_PROVIDERS_FILE_CLASS
+              value: org.apache.kafka.common.config.provider.FileConfigProvider
+          readinessProbe:
+            httpGet:
+              path: /connectors
+              port: 8083
+          volumeMounts:
+            - name: db-secret
+              mountPath: /etc/debezium/secrets
+              readOnly: true
+      volumes:
+        - name: db-secret
+          secret:
+            secretName: debezium-db   # keys: db.properties (hostname=..., user=..., password=...)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-connect
+  namespace: enterprise
+spec:
+  selector:
+    app: kafka-connect
+  ports:
+    - port: 8083
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: debezium-connector
+  namespace: enterprise
+data:
+  connector.json: |
+    {
+      "name": "orders-outbox-connector",
+      "config": {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "plugin.name": "pgoutput",
+        "database.hostname": "${file:/etc/debezium/secrets/db.properties:hostname}",
+        "database.port": "5432",
+        "database.user": "${file:/etc/debezium/secrets/db.properties:user}",
+        "database.password": "${file:/etc/debezium/secrets/db.properties:password}",
+        "database.dbname": "orders",
+        "topic.prefix": "orders-cdc",
+        "table.include.list": "public.outbox_events",
+        "slot.name": "orders_outbox_slot",
+        "publication.name": "orders_outbox_pub",
+        "publication.autocreate.mode": "filtered",
+        "tombstones.on.delete": "false",
+        "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter.schemas.enable": "false",
+        "transforms": "outbox",
+        "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+        "transforms.outbox.table.field.event.id": "id",
+        "transforms.outbox.table.field.event.key": "aggregate_id",
+        "transforms.outbox.table.field.event.payload": "payload",
+        "transforms.outbox.table.expand.json.payload": "true",
+        "transforms.outbox.route.by.field": "aggregate_type",
+        "transforms.outbox.route.topic.regex": "(.*)",
+        "transforms.outbox.route.topic.replacement": "${routedByValue}-events",
+        "transforms.outbox.table.fields.additional.placement": "event_type:header:eventType",
+        "errors.tolerance": "none",
+        "heartbeat.interval.ms": "10000"
+      }
+    }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: register-debezium-connector
+  namespace: enterprise
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: register
+          image: curlimages/curl:8.10.1
+          command: ["sh", "-c"]
+          args:
+            - >-
+              curl -fsS -X PUT -H 'Content-Type: application/json'
+              --data @/cfg/connector.json
+              http://kafka-connect:8083/connectors/orders-outbox-connector/config
+          volumeMounts:
+            - name: cfg
+              mountPath: /cfg
+      volumes:
+        - name: cfg
+          configMap:
+            name: debezium-connector

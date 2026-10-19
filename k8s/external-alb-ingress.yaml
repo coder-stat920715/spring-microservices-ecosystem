@@ -1,0 +1,37 @@
+# LAYER 1 - external L7 load balancer (internet-facing ALB, public subnets, 3 AZs).
+# Created by the AWS Load Balancer Controller. Only CloudFront can reach it (security group
+# uses the CloudFront origin-facing prefix list from terraform/security_groups.tf).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-gateway
+  namespace: enterprise
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/load-balancer-name: ecosystem-external-alb
+    alb.ingress.kubernetes.io/security-groups: ${ALB_SECURITY_GROUP_ID}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: ${ORIGIN_CERTIFICATE_ARN}
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/wafv2-acl-arn: ${REGIONAL_WAF_ACL_ARN}
+    alb.ingress.kubernetes.io/shield-advanced-protection: "true"
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-port: "9090"
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health/readiness
+    alb.ingress.kubernetes.io/load-balancer-attributes: routing.http.drop_invalid_header_fields.enabled=true,deletion_protection.enabled=true
+    # Reject anything that did not come through CloudFront (header injected by the distribution):
+    alb.ingress.kubernetes.io/conditions.api-gateway: >-
+      [{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["${ORIGIN_VERIFY_SECRET}"]}}]
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080

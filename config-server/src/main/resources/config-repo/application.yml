@@ -1,0 +1,6 @@
+# Shared defaults served to every client application.
+# Encrypted values look like:  some.secret: '{cipher}AQB...'   (use POST /encrypt on the config server)
+spring:
+  kafka:
+    properties:
+      security.protocol: ${KAFKA_SECURITY_PROTOCOL:PLAINTEXT}

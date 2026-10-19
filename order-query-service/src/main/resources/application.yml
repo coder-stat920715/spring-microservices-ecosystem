@@ -1,0 +1,97 @@
+server:
+  port: 8082
+  shutdown: graceful
+spring:
+  application:
+    name: order-query-service
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  cloud:
+    config:
+      username: ${CONFIG_USER:config}
+      password: ${CONFIG_PASSWORD:config}
+  threads:
+    virtual:
+      enabled: true
+  data:
+    mongodb:
+      uri: ${MONGO_URI:mongodb://localhost:27017/orders_read}
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      ssl:
+        enabled: ${REDIS_SSL:false}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    listener:
+      observation-enabled: true
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER:http://localhost:8180/realms/enterprise}
+          # JWKS is fetched + cached by Nimbus; unknown 'kid' triggers an automatic refetch => key rotation.
+          jwk-set-uri: ${OIDC_JWKS_URI:http://localhost:8180/realms/enterprise/protocol/openid-connect/certs}
+
+management:
+  server:
+    port: ${MANAGEMENT_PORT:9090}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+---
+spring:
+  config:
+    activate:
+      on-profile: mtls
+  ssl:
+    bundle:
+      pem:
+        mtls:
+          keystore:
+            certificate: file:/etc/mtls/tls.crt
+            private-key: file:/etc/mtls/tls.key
+          truststore:
+            certificate: file:/etc/mtls/ca.crt
+server:
+  ssl:
+    bundle: mtls
+    client-auth: need
+eureka:
+  instance:
+    secure-port-enabled: true
+    non-secure-port-enabled: false
+    secure-port: ${server.port}

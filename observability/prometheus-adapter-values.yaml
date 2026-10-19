@@ -1,0 +1,15 @@
+# helm install prometheus-adapter prometheus-community/prometheus-adapter -n observability -f this-file
+# Exposes http_server_requests_per_second to the HPAs (autoscaling/v2 "Pods" metric).
+prometheus:
+  url: http://prometheus.observability.svc
+rules:
+  custom:
+    - seriesQuery: 'http_server_requests_seconds_count{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: namespace}
+          pod: {resource: pod}
+      name:
+        matches: "^http_server_requests_seconds_count$"
+        as: "http_server_requests_per_second"
+      metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>,uri!~"/actuator.*"}[2m])) by (<<.GroupBy>>)'

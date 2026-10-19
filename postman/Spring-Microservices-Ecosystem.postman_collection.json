@@ -1,0 +1,1811 @@
+{
+  "info": {
+    "name": "Spring Microservices Ecosystem",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "End-to-end tests: Keycloak OAuth2, gateway, RBAC/ABAC, CQRS, outbox + Debezium, saga, cache, resilience. See TESTING_GUIDE.md."
+  },
+  "item": [
+    {
+      "name": "00 Infrastructure checks",
+      "description": "",
+      "item": [
+        {
+          "name": "Gateway /health (public)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Unauthenticated endpoint used by Route 53 health checks."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status UP\", () => pm.expect(pm.response.json().status).to.eql(\"UP\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Keycloak OIDC discovery",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/enterprise/.well-known/openid-configuration",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Fails with 404 until the 'enterprise' realm is imported."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"issuer matches gateway config\", () => pm.expect(pm.response.json().issuer).to.eql(pm.collectionVariables.get(\"keycloakUrl\") + \"/realms/enterprise\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Eureka - registered applications",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{eurekaUrl}}/eureka/apps",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const names = pm.response.json().applications.application.map(a => a.name);",
+                  "pm.test(\"all services registered\", () => [\"API-GATEWAY\",\"ORDER-COMMAND-SERVICE\",\"ORDER-QUERY-SERVICE\",\"PAYMENT-SERVICE\"].forEach(n => pm.expect(names).to.include(n)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Config server - api-gateway config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{configUrl}}/api-gateway/default",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "config",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "config",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"returns property sources\", () => pm.expect(pm.response.json().propertySources).to.be.an(\"array\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Debezium - register outbox connector",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{connectUrl}}/connectors",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Run once. 409 means the connector is already registered.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"orders-outbox-connector\",\n  \"config\": {\n    \"connector.class\": \"io.debezium.connector.postgresql.PostgresConnector\",\n    \"tasks.max\": \"1\",\n    \"plugin.name\": \"pgoutput\",\n    \"database.hostname\": \"postgres\",\n    \"database.port\": \"5432\",\n    \"database.user\": \"postgres\",\n    \"database.password\": \"postgres\",\n    \"database.dbname\": \"orders\",\n    \"topic.prefix\": \"orders-cdc\",\n    \"table.include.list\": \"public.outbox_events\",\n    \"slot.name\": \"orders_outbox_slot\",\n    \"publication.name\": \"orders_outbox_pub\",\n    \"publication.autocreate.mode\": \"filtered\",\n    \"tombstones.on.delete\": \"false\",\n    \"key.converter\": \"org.apache.kafka.connect.storage.StringConverter\",\n    \"value.converter\": \"org.apache.kafka.connect.json.JsonConverter\",\n    \"value.converter.schemas.enable\": \"false\",\n    \"transforms\": \"outbox\",\n    \"transforms.outbox.type\": \"io.debezium.transforms.outbox.EventRouter\",\n    \"transforms.outbox.table.field.event.id\": \"id\",\n    \"transforms.outbox.table.field.event.key\": \"aggregate_id\",\n    \"transforms.outbox.table.field.event.payload\": \"payload\",\n    \"transforms.outbox.table.expand.json.payload\": \"true\",\n    \"transforms.outbox.route.by.field\": \"aggregate_type\",\n    \"transforms.outbox.route.topic.regex\": \"(.*)\",\n    \"transforms.outbox.route.topic.replacement\": \"${routedByValue}-events\",\n    \"transforms.outbox.table.fields.additional.placement\": \"event_type:header:eventType\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 created or 409 already exists\", () => pm.expect([201, 409]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Debezium - connector status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{connectUrl}}/connectors/orders-outbox-connector/status",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"connector and task RUNNING\", () => { const j = pm.response.json(); pm.expect(j.connector.state).to.eql(\"RUNNING\"); pm.expect(j.tasks[0].state).to.eql(\"RUNNING\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Swagger - order-command OpenAPI via gateway",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/docs/order-command/v3/api-docs",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "UI: {{baseUrl}}/swagger-ui.html"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"OpenAPI 3\", () => pm.expect(pm.response.json().openapi).to.match(/^3\\./));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 Authentication",
+      "description": "",
+      "item": [
+        {
+          "name": "Token - admin1 (ROLE_ADMIN)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/enterprise/protocol/openid-connect/token",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Password grant against the imported realm. Token is stored in a collection variable.",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "postman-client"
+                },
+                {
+                  "key": "username",
+                  "value": "admin1"
+                },
+                {
+                  "key": "password",
+                  "value": "Passw0rd!"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function decode(t){return JSON.parse(atob(t.split(\".\")[1].replace(/-/g,\"+\").replace(/_/g,\"/\")));}",
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().access_token;",
+                  "pm.test(\"access_token present\", () => pm.expect(token).to.be.a(\"string\"));",
+                  "pm.collectionVariables.set(\"tokenAdmin\", token);",
+                  "const c = decode(token);",
+                  "pm.test(\"tenant_id claim = tenant-admin\", () => pm.expect(c.tenant_id).to.eql(\"tenant-admin\"));",
+                  "pm.test(\"realm role admin\", () => pm.expect(c.realm_access.roles).to.include(\"admin\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token - customer-a (tenant-a)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/enterprise/protocol/openid-connect/token",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Password grant against the imported realm. Token is stored in a collection variable.",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "postman-client"
+                },
+                {
+                  "key": "username",
+                  "value": "customer-a"
+                },
+                {
+                  "key": "password",
+                  "value": "Passw0rd!"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function decode(t){return JSON.parse(atob(t.split(\".\")[1].replace(/-/g,\"+\").replace(/_/g,\"/\")));}",
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().access_token;",
+                  "pm.test(\"access_token present\", () => pm.expect(token).to.be.a(\"string\"));",
+                  "pm.collectionVariables.set(\"tokenCustomerA\", token);",
+                  "const c = decode(token);",
+                  "pm.test(\"tenant_id claim = tenant-a\", () => pm.expect(c.tenant_id).to.eql(\"tenant-a\"));",
+                  "pm.test(\"realm role customer\", () => pm.expect(c.realm_access.roles).to.include(\"customer\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token - customer-b (tenant-b)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/enterprise/protocol/openid-connect/token",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Password grant against the imported realm. Token is stored in a collection variable.",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "postman-client"
+                },
+                {
+                  "key": "username",
+                  "value": "customer-b"
+                },
+                {
+                  "key": "password",
+                  "value": "Passw0rd!"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function decode(t){return JSON.parse(atob(t.split(\".\")[1].replace(/-/g,\"+\").replace(/_/g,\"/\")));}",
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().access_token;",
+                  "pm.test(\"access_token present\", () => pm.expect(token).to.be.a(\"string\"));",
+                  "pm.collectionVariables.set(\"tokenCustomerB\", token);",
+                  "const c = decode(token);",
+                  "pm.test(\"tenant_id claim = tenant-b\", () => pm.expect(c.tenant_id).to.eql(\"tenant-b\"));",
+                  "pm.test(\"realm role customer\", () => pm.expect(c.realm_access.roles).to.include(\"customer\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token - operator1 (tenant-a)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/enterprise/protocol/openid-connect/token",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Password grant against the imported realm. Token is stored in a collection variable.",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "postman-client"
+                },
+                {
+                  "key": "username",
+                  "value": "operator1"
+                },
+                {
+                  "key": "password",
+                  "value": "Passw0rd!"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function decode(t){return JSON.parse(atob(t.split(\".\")[1].replace(/-/g,\"+\").replace(/_/g,\"/\")));}",
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().access_token;",
+                  "pm.test(\"access_token present\", () => pm.expect(token).to.be.a(\"string\"));",
+                  "pm.collectionVariables.set(\"tokenOperator\", token);",
+                  "const c = decode(token);",
+                  "pm.test(\"tenant_id claim = tenant-a\", () => pm.expect(c.tenant_id).to.eql(\"tenant-a\"));",
+                  "pm.test(\"realm role operator\", () => pm.expect(c.realm_access.roles).to.include(\"operator\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders?tenantId=tenant-a",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Gateway is an OAuth2 resource server: unauthenticated requests are rejected at the edge."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Garbage token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders?tenantId=tenant-a",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "not.a.jwt",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 Order Command (write side, RBAC + ABAC)",
+      "description": "",
+      "item": [
+        {
+          "name": "2.1 Create order - customer-a, own tenant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "CloudFront-Viewer-Country",
+                "value": "IN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "RBAC: customer role. ABAC: tenantMatches (JWT tenant_id = body tenantId), riskBelow(70) (gateway score 10), inTimeWindow, locationAllowed (CloudFront-Viewer-Country=IN). Writes orders + 2 outbox rows in ONE transaction.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": 149.99,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 202\", () => pm.response.to.have.status(202));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"id + PENDING\", () => { pm.expect(j.id).to.match(/^[0-9a-f-]{36}$/); pm.expect(j.status).to.eql(\"PENDING\"); pm.expect(j.version).to.eql(0); });",
+                  "pm.collectionVariables.set(\"orderId\", j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2 ABAC deny - customer-a creates for tenant-b",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "CloudFront-Viewer-Country",
+                "value": "IN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "tenantMatches() fails -> 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-b\",\n  \"totalAmount\": 149.99,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.3 ABAC deny - missing location header",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "No CloudFront-Viewer-Country -> locationAllowed() fails closed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": 149.99,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.4 ABAC deny - location not allowed (RU)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "CloudFront-Viewer-Country",
+                "value": "RU"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Allowed: IN, US, DE, GB, SG (abac.allowed-locations).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": 149.99,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.5 Validation error - negative amount (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": -5,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.6 Create order - admin (RBAC bypasses ABAC)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": 500,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 202\", () => pm.response.to.have.status(202));",
+                  "pm.collectionVariables.set(\"adminOrderId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.7 Update denied - customer role",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "CloudFront-Viewer-Country",
+                "value": "IN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders/{{orderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Update needs ROLE_ADMIN, or ROLE_OPERATOR with riskBelow(50) and inTimeWindow.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SHIPPED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.8 Update - operator sets SHIPPED",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders/{{orderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenOperator}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Run after the saga settled (folder 04). Optimistic locking (@Version) bumps the version and an ORDER_UPDATED outbox row is written.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SHIPPED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"SHIPPED and version incremented\", () => { pm.expect(j.status).to.eql(\"SHIPPED\"); pm.expect(j.version).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.9 Update unknown order -> 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders/00000000-0000-0000-0000-000000000000",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SHIPPED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.10 Batch create - admin (virtual threads)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders/batch",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "One virtual thread per order, orchestrated with CompletableFuture on the batch executor.",
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"customerId\": \"cust-001\",\n    \"tenantId\": \"tenant-a\",\n    \"totalAmount\": 10,\n    \"currency\": \"USD\"\n  },\n  {\n    \"customerId\": \"cust-001\",\n    \"tenantId\": \"tenant-a\",\n    \"totalAmount\": 11,\n    \"currency\": \"USD\"\n  },\n  {\n    \"customerId\": \"cust-001\",\n    \"tenantId\": \"tenant-a\",\n    \"totalAmount\": 12,\n    \"currency\": \"USD\"\n  },\n  {\n    \"customerId\": \"cust-001\",\n    \"tenantId\": \"tenant-a\",\n    \"totalAmount\": 13,\n    \"currency\": \"USD\"\n  },\n  {\n    \"customerId\": \"cust-001\",\n    \"tenantId\": \"tenant-a\",\n    \"totalAmount\": 14,\n    \"currency\": \"USD\"\n  }\n]",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"5/5 succeeded\", () => { pm.expect(j.total).to.eql(5); pm.expect(j.succeeded).to.eql(5); pm.expect(j.failed).to.eql(0); pm.expect(j.orderIds.length).to.eql(5); });",
+                  "console.log(\"batch took \" + j.durationMs + \" ms\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.11 Batch denied - customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "CloudFront-Viewer-Country",
+                "value": "IN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders/batch",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"customerId\": \"cust-001\",\n    \"tenantId\": \"tenant-a\",\n    \"totalAmount\": 149.99,\n    \"currency\": \"USD\"\n  }\n]",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 Order Query (CQRS read side + two-level cache)",
+      "description": "",
+      "item": [
+        {
+          "name": "3.1 Get order - customer-a (own tenant)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders/{{orderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Served from MongoDB the first time (cache miss) after Debezium delivered the event. If 404, the projection has not arrived yet - re-send."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// wait for Debezium -> Kafka -> Mongo projection (eventual consistency)",
+                  "setTimeout(function () {}, 3000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"projected read model\", () => { pm.expect(j.id).to.eql(pm.collectionVariables.get(\"orderId\")); pm.expect(j.tenantId).to.eql(\"tenant-a\"); });",
+                  "pm.collectionVariables.set(\"t_first\", pm.response.responseTime);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.2 Get same order again (cache hit)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders/{{orderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Hit in L1 Caffeine (10 s TTL) or L2 Redis (10 min TTL)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"served (compare with 3.1 in Console)\", () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"orderId\")));",
+                  "console.log(\"first: \" + pm.collectionVariables.get(\"t_first\") + \" ms, second: \" + pm.response.responseTime + \" ms\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.3 ABAC deny - customer-b reads tenant-a order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders/{{orderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerB}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "@PostAuthorize compares returnObject.tenantId() with the JWT tenant_id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.4 Admin reads any tenant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders/{{orderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.5 Unknown order -> 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders/does-not-exist",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.6 List tenant-a - customer-a",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders?tenantId=tenant-a&page=0&size=20",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const a = pm.response.json();",
+                  "pm.test(\"array, only tenant-a\", () => { pm.expect(a).to.be.an(\"array\").that.is.not.empty; a.forEach(o => pm.expect(o.tenantId).to.eql(\"tenant-a\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.7 List tenant-a - customer-b denied",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders?tenantId=tenant-a",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerB}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.8 Get order after update shows SHIPPED",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders/{{orderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Run after 2.8."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// wait for Debezium -> Kafka -> Mongo projection (eventual consistency)",
+                  "setTimeout(function () {}, 3000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"SHIPPED and version > 0 (cache evicted by projection)\", () => { const j = pm.response.json(); pm.expect(j.status).to.eql(\"SHIPPED\"); pm.expect(j.version).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Saga + payment (Kafka, Resilience4j, DLT)",
+      "description": "",
+      "item": [
+        {
+          "name": "4.1 Create order to trigger saga",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "CloudFront-Viewer-Country",
+                "value": "IN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "PAYMENT_REQUESTED outbox row -> Debezium -> payment-events -> payment-service -> payment provider -> payment-results -> order-command.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": 75.5,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 202\", () => pm.response.to.have.status(202));",
+                  "pm.collectionVariables.set(\"sagaOrderId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.2 Poll order - saga outcome",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders/{{sagaOrderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "expectedSagaStatus=PAID when the WireMock provider stub runs; CANCELLED (compensation) when the provider is unreachable. Retries take several seconds - re-send if still PENDING."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// wait for Debezium -> Kafka -> Mongo projection (eventual consistency)",
+                  "setTimeout(function () {}, 8000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const expected = pm.collectionVariables.get(\"expectedSagaStatus\");",
+                  "pm.test(\"saga finished with \" + expected, () => pm.expect(pm.response.json().status).to.eql(expected));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 Resilience and zero-trust checks",
+      "description": "",
+      "item": [
+        {
+          "name": "5.1a Token for revocation test (customer-a)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{keycloakUrl}}/realms/enterprise/protocol/openid-connect/token",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "postman-client"
+                },
+                {
+                  "key": "username",
+                  "value": "customer-a"
+                },
+                {
+                  "key": "password",
+                  "value": "Passw0rd!"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function decode(t){return JSON.parse(atob(t.split(\".\")[1].replace(/-/g,\"+\").replace(/_/g,\"/\")));}",
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "const t = pm.response.json().access_token;",
+                  "pm.collectionVariables.set(\"tokenRevoke\", t);",
+                  "pm.collectionVariables.set(\"jtiRevoke\", decode(t).jti);",
+                  "console.log(\"revoke with:  docker compose exec redis redis-cli SET revoked:jti:\" + decode(t).jti + \" 1 EX 600\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.1b Call with token BEFORE revocation -> 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders?tenantId=tenant-a",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenRevoke}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.1c Call AFTER revocation -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders?tenantId=tenant-a",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenRevoke}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Run the redis-cli command printed in the Postman Console after 5.1a first. The gateway checks the Redis deny-list on the token's jti."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.2 Forged X-User-Location is stripped -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Location",
+                "value": "IN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Gateway removes client-supplied trust headers; location only comes from CloudFront-Viewer-Country.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": 149.99,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.3 Forged X-Request-Risk-Score is overwritten",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "CloudFront-Viewer-Country",
+                "value": "IN"
+              },
+              {
+                "key": "X-Request-Risk-Score",
+                "value": "0"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders/{{orderId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Still 403 because customers can never update (and the score is recomputed by the gateway).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SHIPPED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.4 Direct to order-command, no gateway headers -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{commandUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Bypassing the gateway: risk score and location headers are missing, ABAC fails closed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": 149.99,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.5 Direct: processor stats (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{commandUrl}}/api/orders/_stats",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenAdmin}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Direct only: through the gateway GET /api/orders/** is routed to the query service."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"counters\", () => { const j = pm.response.json(); pm.expect(j).to.have.property(\"submitted\"); pm.expect(j).to.have.property(\"succeeded\"); pm.expect(j).to.have.property(\"failed\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.6 Rate limit probe",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/orders?tenantId=tenant-a",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Use the Collection Runner (see TESTING_GUIDE.md section 6) after lowering the limiter."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 or 429 (rate limited)\", () => pm.expect([200, 429]).to.include(pm.response.code));",
+                  "if (pm.response.code === 429) console.log(\"429 after limiter tripped; remaining=\" + pm.response.headers.get(\"X-RateLimit-Remaining\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.7 Circuit breaker fallback (stop order-command first)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "CloudFront-Viewer-Country",
+                "value": "IN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/orders",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tokenCustomerA}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Run: docker compose stop order-command-service, send this, then docker compose start order-command-service.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cust-001\",\n  \"tenantId\": \"tenant-a\",\n  \"totalAmount\": 149.99,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 503\", () => pm.response.to.have.status(503));",
+                  "pm.test(\"fallback body\", () => pm.expect(pm.response.json().error).to.include(\"unavailable\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "keycloakUrl",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "commandUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "queryUrl",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "eurekaUrl",
+      "value": "http://localhost:8761"
+    },
+    {
+      "key": "configUrl",
+      "value": "http://localhost:8888"
+    },
+    {
+      "key": "connectUrl",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "expectedSagaStatus",
+      "value": "PAID"
+    },
+    {
+      "key": "tokenAdmin",
+      "value": ""
+    },
+    {
+      "key": "tokenCustomerA",
+      "value": ""
+    },
+    {
+      "key": "tokenCustomerB",
+      "value": ""
+    },
+    {
+      "key": "tokenOperator",
+      "value": ""
+    },
+    {
+      "key": "tokenRevoke",
+      "value": ""
+    },
+    {
+      "key": "jtiRevoke",
+      "value": ""
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    },
+    {
+      "key": "adminOrderId",
+      "value": ""
+    },
+    {
+      "key": "sagaOrderId",
+      "value": ""
+    },
+    {
+      "key": "t_first",
+      "value": ""
+    }
+  ]
+}

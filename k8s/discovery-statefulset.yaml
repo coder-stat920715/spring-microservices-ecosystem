@@ -1,0 +1,80 @@
+# Eureka peers need stable DNS names -> StatefulSet + headless Service (3 replicas, one per AZ).
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-server
+  namespace: enterprise
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: discovery-server
+  ports:
+    - name: app
+      port: 8761
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: discovery-server
+  namespace: enterprise
+spec:
+  serviceName: discovery-server
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: discovery-server
+  template:
+    metadata:
+      labels:
+        app: discovery-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: discovery-server
+      containers:
+        - name: discovery-server
+          image: ${ECR_REGISTRY}/discovery-server:${IMAGE_TAG}
+          ports:
+            - name: app
+              containerPort: 8761
+            - name: mgmt
+              containerPort: 9090
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: EUREKA_HOSTNAME
+              value: "$(POD_NAME).discovery-server.enterprise.svc.cluster.local"
+            - name: EUREKA_PEER_MODE
+              value: "true"
+            - name: EUREKA_PEERS
+              value: "http://discovery-server-0.discovery-server.enterprise.svc.cluster.local:8761/eureka/,http://discovery-server-1.discovery-server.enterprise.svc.cluster.local:8761/eureka/,http://discovery-server-2.discovery-server.enterprise.svc.cluster.local:8761/eureka/"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: mgmt
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: mgmt
+            initialDelaySeconds: 30

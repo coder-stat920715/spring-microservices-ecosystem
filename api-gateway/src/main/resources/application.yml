@@ -1,0 +1,139 @@
+server:
+  port: 8080
+  shutdown: graceful
+spring:
+  application:
+    name: api-gateway
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  cloud:
+    config:
+      username: ${CONFIG_USER:config}
+      password: ${CONFIG_PASSWORD:config}
+    gateway:
+      discovery:
+        locator:
+          enabled: false
+      routes:
+        - id: order-command
+          uri: lb://order-command-service
+          predicates:
+            - Path=/api/orders/**
+            - Method=POST,PUT,PATCH,DELETE
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: orderCommandCb
+                fallbackUri: forward:/fallback/order-command
+        - id: order-query
+          uri: lb://order-query-service
+          predicates:
+            - Path=/api/orders/**
+            - Method=GET
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 200
+                redis-rate-limiter.burstCapacity: 400
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: orderQueryCb
+                fallbackUri: forward:/fallback/order-query
+        - id: order-command-docs
+          uri: lb://order-command-service
+          predicates:
+            - Path=/docs/order-command/**
+          filters:
+            - RewritePath=/docs/order-command/(?<rest>.*), /$\{rest}
+        - id: order-query-docs
+          uri: lb://order-query-service
+          predicates:
+            - Path=/docs/order-query/**
+          filters:
+            - RewritePath=/docs/order-query/(?<rest>.*), /$\{rest}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      ssl:
+        enabled: ${REDIS_SSL:false}
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER:http://localhost:8180/realms/enterprise}
+          # JWKS is fetched + cached by Nimbus; unknown 'kid' triggers an automatic refetch => key rotation.
+          jwk-set-uri: ${OIDC_JWKS_URI:http://localhost:8180/realms/enterprise/protocol/openid-connect/certs}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    urls:
+      - name: order-command
+        url: /docs/order-command/v3/api-docs
+      - name: order-query
+        url: /docs/order-query/v3/api-docs
+app:
+  security:
+    revocation:
+      fail-open: false
+
+management:
+  server:
+    port: ${MANAGEMENT_PORT:9090}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+---
+spring:
+  config:
+    activate:
+      on-profile: mtls
+  ssl:
+    bundle:
+      pem:
+        mtls:
+          keystore:
+            certificate: file:/etc/mtls/tls.crt
+            private-key: file:/etc/mtls/tls.key
+          truststore:
+            certificate: file:/etc/mtls/ca.crt
+  cloud:
+    gateway:
+      httpclient:
+        ssl:
+          ssl-bundle: mtls

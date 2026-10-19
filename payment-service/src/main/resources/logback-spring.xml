@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <springProperty scope="context" name="service" source="spring.application.name" defaultValue="app"/>
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
+            <includeMdcKeyName>userId</includeMdcKeyName>
+            <includeMdcKeyName>tenantId</includeMdcKeyName>
+            <includeMdcKeyName>clientIp</includeMdcKeyName>
+            <customFields>{"service":"${service}"}</customFields>
+            <fieldNames>
+                <thread>thread</thread>
+            </fieldNames>
+        </encoder>
+    </appender>
+    <root level="INFO">
+        <appender-ref ref="JSON"/>
+    </root>
+</configuration>

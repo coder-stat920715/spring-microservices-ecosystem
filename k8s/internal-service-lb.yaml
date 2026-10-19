@@ -1,0 +1,100 @@
+# LAYER 2 - internal service load balancing, inside private subnets, between the API gateway and the
+# downstream microservices. mTLS is end to end (TCP passthrough, Spring SSL bundles on both sides).
+#  * In-cluster: ClusterIP Services + Eureka client-side load balancing (lb://) from the gateway.
+#  * VPC-internal consumers (other clusters, batch jobs): internal NLBs below, no public exposure.
+#  * Circuit breaking: Resilience4j in the gateway; autoscaling: the HPAs.
+#  * Zero trust: NetworkPolicies allow only gateway -> services.
+# (If you run Istio/App Mesh, replace this layer with mesh VirtualServices/DestinationRules.)
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-command-service-internal
+  namespace: enterprise
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: service.k8s.aws/nlb
+  selector:
+    app: order-command-service
+  ports:
+    - name: https
+      port: 8443
+      targetPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-query-service-internal
+  namespace: enterprise
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: service.k8s.aws/nlb
+  selector:
+    app: order-query-service
+  ports:
+    - name: https
+      port: 8443
+      targetPort: 8082
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: enterprise
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-to-services
+  namespace: enterprise
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["order-command-service", "order-query-service", "payment-service"]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - port: 8081
+        - port: 8082
+        - port: 8083
+    - from:                      # Prometheus / ALB-less health scraping of the management port
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - port: 9090
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alb-and-platform
+  namespace: enterprise
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["api-gateway", "config-server", "discovery-server"]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.20.0.0/16   # VPC CIDR: ALB (IP targets), pods

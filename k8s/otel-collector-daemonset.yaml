@@ -1,0 +1,81 @@
+# One OpenTelemetry collector per node (hostPort 4318). Apps export OTLP to $(NODE_IP):4318;
+# the collector forwards traces to AWS X-Ray (and metrics/logs pipelines can be added).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: adot-collector
+  namespace: observability
+  annotations:
+    eks.amazonaws.com/role-arn: ${ADOT_ROLE_ARN}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      batch: {}
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 256
+    exporters:
+      awsxray:
+        region: ${AWS_REGION}
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [awsxray]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: adot-collector
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app: adot-collector
+  template:
+    metadata:
+      labels:
+        app: adot-collector
+    spec:
+      serviceAccountName: adot-collector
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.111.0
+          args: ["--config=/conf/config.yaml"]
+          env:
+            - name: AWS_REGION
+              value: ${AWS_REGION}
+          ports:
+            - containerPort: 4318
+              hostPort: 4318
+              name: otlp-http
+            - containerPort: 4317
+              hostPort: 4317
+              name: otlp-grpc
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 300Mi
+          volumeMounts:
+            - name: conf
+              mountPath: /conf
+      volumes:
+        - name: conf
+          configMap:
+            name: otel-collector-config
